@@ -1,2 +1,3 @@
 ./cmd/processMedications/
 .idea/
+bin/
