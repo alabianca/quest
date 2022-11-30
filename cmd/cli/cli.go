@@ -1,19 +1,23 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"github.com/alabianca/quest/trie"
 	"io/fs"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 )
 
-const INDEX_COMMAND = "index"
+const IndexCommand = "index"
 
-type readResult struct {
+type document struct {
 	data []byte
 	ext  string
 	path string
@@ -37,8 +41,8 @@ func findMatchingFiles(dir, pattern string) <-chan string {
 	return outChannel
 }
 
-func readFiles(files <-chan string) <-chan readResult {
-	outChannel := make(chan readResult)
+func readFiles(files <-chan string) <-chan document {
+	outChannel := make(chan document)
 
 	go func(_files <-chan string) {
 		defer close(outChannel)
@@ -50,7 +54,7 @@ func readFiles(files <-chan string) <-chan readResult {
 				continue
 			}
 
-			outChannel <- readResult{data: b, ext: filepath.Ext(file), path: file}
+			outChannel <- document{data: b, ext: filepath.Ext(file), path: file}
 
 			//switch filepath.Ext(file) {
 			//case ".json":
@@ -64,11 +68,11 @@ func readFiles(files <-chan string) <-chan readResult {
 	return outChannel
 }
 
-func merge(cs ...<-chan readResult) <-chan readResult {
+func merge(cs ...<-chan document) <-chan document {
 	var wg sync.WaitGroup
-	out := make(chan readResult)
+	out := make(chan document)
 
-	output := func(c <-chan readResult) {
+	output := func(c <-chan document) {
 		for res := range c {
 			out <- res
 		}
@@ -91,40 +95,94 @@ func merge(cs ...<-chan readResult) <-chan readResult {
 	return out
 }
 
-func index(p string) int64 {
-	pattern := p
+func processDocument(t *trie.Trie, doc document, params map[string][]string) {
+	switch doc.ext {
+	case ".json":
+		var payload map[string]interface{}
+		err := json.Unmarshal(doc.data, &payload)
+		if err != nil {
+			return
+		}
+		if fieldsToIndex, ok := params[FieldsParam]; ok && len(fieldsToIndex) > 0 {
+			// only index specific fields
+			for _, field := range fieldsToIndex {
+				v, ok := payload[field]
+				if !ok {
+					continue
+				}
+				// only index strings
+				switch v.(type) {
+				case string:
+					fmt.Printf("Inserting %v\n", v)
+					t.Insert(fmt.Sprintf("%v", v))
+				}
+			}
+		} else {
+			// index all fields
+			// TODO
+		}
+	}
+}
+
+func index(params map[string][]string, concurrency int) (int64, error) {
+	patternParam, ok := params[PatternParam]
+	if !ok {
+		return 0, fmt.Errorf("-p is required when indexing")
+	}
+	pattern := patternParam[0]
+	if pattern == "" {
+		pattern = "."
+	}
+	c := int(math.Min(float64(runtime.NumCPU()), float64(concurrency)))
+	if c < 1 {
+		c = 1
+	}
 	// account of macOS "~" shortcut
-	if strings.HasPrefix(p, "~/") {
+	if strings.HasPrefix(pattern, "~/") {
 		dirname, _ := os.UserHomeDir()
 		pattern = path.Join(dirname, pattern[2:])
 	}
 
+	t := trie.New()
+
 	files := findMatchingFiles(filepath.Split(pattern))
 
 	// start multiple read workers
-	c1 := readFiles(files)
-	c2 := readFiles(files)
-	c3 := readFiles(files)
-	c4 := readFiles(files)
-	c5 := readFiles(files)
-	c6 := readFiles(files)
-	c7 := readFiles(files)
-	c8 := readFiles(files)
-	c9 := readFiles(files)
-	c10 := readFiles(files)
-	c11 := readFiles(files)
-	c12 := readFiles(files)
-	c13 := readFiles(files)
-	c14 := readFiles(files)
-	c15 := readFiles(files)
-	c16 := readFiles(files)
+	channels := make([]<-chan document, c)
+	for i := 0; i < c; i++ {
+		channels[i] = readFiles(files)
+	}
 
 	var numFiles int64
-	for range merge(c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16) {
+	for doc := range merge(channels...) {
+		processDocument(t, doc, params)
 		numFiles++
 	}
 
-	return numFiles
+	return numFiles, nil
+}
+
+const PatternParam = "-p"
+const FieldsParam = "-f"
+
+func isParam(s string) bool {
+	return s == PatternParam || s == FieldsParam
+}
+
+func parseParams(rawParams []string) map[string][]string {
+	pList := make(map[string][]string)
+	var lastParamSeen string
+	for _, s := range rawParams {
+		if isParam(s) {
+			lastParamSeen = s
+			pList[s] = make([]string, 0)
+		} else if p, ok := pList[lastParamSeen]; ok {
+			pList[lastParamSeen] = append(p, s)
+
+		}
+	}
+
+	return pList
 }
 
 func main() {
@@ -137,10 +195,10 @@ func main() {
 	command := args[0]
 
 	switch command {
-	case INDEX_COMMAND:
-		fmt.Println("Indexing...")
+	case IndexCommand:
+		params := parseParams(args[1:])
 		before := time.Now()
-		x := index(args[1])
+		x, _ := index(params, 16)
 		fmt.Printf("Took %f seconds to index %d files\n", time.Now().Sub(before).Seconds(), x)
 	}
 }

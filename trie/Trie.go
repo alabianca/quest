@@ -1,14 +1,19 @@
 package trie
 
-import "strings"
+import (
+	"strings"
+	"sync"
+)
 
 type Trie struct {
-	Root *TrieNode
+	Root  *TrieNode
+	mutex *sync.RWMutex
 }
 
 func New() *Trie {
 	return &Trie{
-		Root: NewTrieNode(),
+		Root:  NewTrieNode(),
+		mutex: &sync.RWMutex{},
 	}
 }
 
@@ -42,6 +47,9 @@ func (t *Trie) Insert(word string) {
 	current := t.Root
 	lower := strings.ToLower(word)
 
+	// lock the trie for thread safe inserts
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
 	for _, c := range lower {
 		bt := byte(c)
 		if current.Children[bt] == nil {
